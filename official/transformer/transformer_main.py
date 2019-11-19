@@ -32,8 +32,6 @@ from absl import flags
 import tensorflow as tf
 # pylint: enable=g-bad-import-order
 
-from official.r1.utils import export
-from official.r1.utils import tpu as tpu_util
 from official.transformer import compute_bleu
 from official.transformer import translate
 from official.transformer.model import model_params
@@ -42,6 +40,8 @@ from official.transformer.utils import dataset
 from official.transformer.utils import metrics
 from official.transformer.utils import schedule
 from official.transformer.utils import tokenizer
+from official.utils.accelerator import tpu as tpu_util
+from official.utils.export import export
 from official.utils.flags import core as flags_core
 from official.utils.logs import hooks_helper
 from official.utils.logs import logger
@@ -56,7 +56,7 @@ PARAMS_MAP = {
 
 
 DEFAULT_TRAIN_EPOCHS = 10
-INF = 1000000000  # 1e9
+INF = int(1e9)
 BLEU_DIR = "bleu"
 
 # Dictionary containing tensors that are logged by the logging hooks. Each item
@@ -140,7 +140,7 @@ def model_fn(features, labels, mode, params):
 
 def record_scalars(metric_dict):
   for key, value in metric_dict.items():
-    tf.summary.scalar(name=key, tensor=value)
+    tf.contrib.summary.scalar(name=key, tensor=value)
 
 
 def get_learning_rate(learning_rate, hidden_size, learning_rate_warmup_steps):
@@ -251,49 +251,6 @@ def _validate_file(filepath):
 def run_loop(
     estimator, schedule_manager, train_hooks=None, benchmark_logger=None,
     bleu_source=None, bleu_ref=None, bleu_threshold=None, vocab_file=None):
-  """Train and evaluate model, and optionally compute model's BLEU score.
-
-  **Step vs. Epoch vs. Iteration**
-
-  Steps and epochs are canonical terms used in TensorFlow and general machine
-  learning. They are used to describe running a single process (train/eval):
-    - Step refers to running the process through a single or batch of examples.
-    - Epoch refers to running the process through an entire dataset.
-
-  E.g. training a dataset with 100 examples. The dataset is
-  divided into 20 batches with 5 examples per batch. A single training step
-  trains the model on one batch. After 20 training steps, the model will have
-  trained on every batch in the dataset, or, in other words, one epoch.
-
-  Meanwhile, iteration is used in this implementation to describe running
-  multiple processes (training and eval).
-    - A single iteration:
-      1. trains the model for a specific number of steps or epochs.
-      2. evaluates the model.
-      3. (if source and ref files are provided) compute BLEU score.
-
-  This function runs through multiple train+eval+bleu iterations.
-
-  Args:
-    estimator: tf.Estimator containing model to train.
-    schedule_manager: A schedule.Manager object to guide the run loop.
-    train_hooks: List of hooks to pass to the estimator during training.
-    benchmark_logger: a BenchmarkLogger object that logs evaluation data
-    bleu_source: File containing text to be translated for BLEU calculation.
-    bleu_ref: File containing reference translations for BLEU calculation.
-    bleu_threshold: minimum BLEU score before training is stopped.
-    vocab_file: Path to vocab file that will be used to subtokenize bleu_source.
-
-  Returns:
-    Dict of results of the run.  Contains the keys `eval_results`,
-    `train_hooks`, `bleu_cased`, and `bleu_uncased`. `train_hooks` is a list the
-    instances of hooks used during training.
-
-  Raises:
-    ValueError: if both or none of single_iteration_train_steps and
-      single_iteration_train_epochs were defined.
-    NotFoundError: if the vocab file or bleu files don't exist.
-  """
   if bleu_source:
     _validate_file(bleu_source)
   if bleu_ref:
@@ -341,7 +298,7 @@ def run_loop(
         dataset.train_input_fn,
         steps=schedule_manager.single_iteration_train_steps,
         hooks=train_hooks)
-
+    
     eval_results = estimator.evaluate(
         input_fn=dataset.eval_input_fn,
         steps=schedule_manager.single_iteration_eval_steps)
@@ -394,10 +351,7 @@ def define_transformer_flags():
       name="max_length", short_name="ml", default=None,
       help=flags_core.help_wrap("Max length."))
 
-  flags_core.define_base(clean=True, train_epochs=True,
-                         epochs_between_evals=True, stop_threshold=True,
-                         num_gpu=True, hooks=True, export_dir=True,
-                         distribution_strategy=True)
+  flags_core.define_base()
   flags_core.define_performance(
       num_parallel_calls=True,
       inter_op=False,
@@ -417,7 +371,7 @@ def define_transformer_flags():
 
   # Add transformer-specific flags
   flags.DEFINE_enum(
-      name="param_set", short_name="mp", default="big",
+      name="param_set", short_name="mp", default="tiny",
       enum_values=PARAMS_MAP.keys(),
       help=flags_core.help_wrap(
           "Parameter set to use when creating and training the model. The "
@@ -449,28 +403,28 @@ def define_transformer_flags():
 
   # BLEU score computation
   flags.DEFINE_string(
-      name="bleu_source", short_name="bls", default=None,
+      name="bleu_source", short_name="bls", default="wmt/newstest2014.en",
       help=flags_core.help_wrap(
           "Path to source file containing text translate when calculating the "
           "official BLEU score. Both --bleu_source and --bleu_ref must be set. "
           "Use the flag --stop_threshold to stop the script based on the "
           "uncased BLEU score."))
   flags.DEFINE_string(
-      name="bleu_ref", short_name="blr", default=None,
+      name="bleu_ref", short_name="blr", default="wmt/newstest2014.de",
       help=flags_core.help_wrap(
           "Path to source file containing text translate when calculating the "
           "official BLEU score. Both --bleu_source and --bleu_ref must be set. "
           "Use the flag --stop_threshold to stop the script based on the "
           "uncased BLEU score."))
   flags.DEFINE_string(
-      name="vocab_file", short_name="vf", default=None,
+      name="vocab_file", short_name="vf", default="data/vocab.ende.32768",
       help=flags_core.help_wrap(
           "Path to subtoken vocabulary file. If data_download.py was used to "
           "download and encode the training data, look in the data_dir to find "
           "the vocab file."))
 
-  flags_core.set_defaults(data_dir="/tmp/translate_ende",
-                          model_dir="/tmp/transformer_model",
+  flags_core.set_defaults(data_dir="data",
+                          model_dir="checkpoint",
                           batch_size=None,
                           train_epochs=None)
 
@@ -668,6 +622,6 @@ def main(_):
 
 
 if __name__ == "__main__":
-  tf.logging.set_verbosity(tf.logging.INFO)
+  tf.logging.set_verbosity(tf.logging.DEBUG)
   define_transformer_flags()
   absl_app.run(main)

@@ -117,12 +117,12 @@ def main(unused_argv):
 def define_compute_bleu_flags():
   """Add flags for computing BLEU score."""
   flags.DEFINE_string(
-      name="translation", default=None,
+      name="translation", default="wmt/newstest2014.en",
       help=flags_core.help_wrap("File containing translated text."))
   flags.mark_flag_as_required("translation")
 
   flags.DEFINE_string(
-      name="reference", default=None,
+      name="reference", default="wmt/newstest2014.de",
       help=flags_core.help_wrap("File containing reference translation."))
   flags.mark_flag_as_required("reference")
 

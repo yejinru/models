@@ -54,7 +54,6 @@ from __future__ import print_function
 import math
 import os
 
-from absl import logging
 import tensorflow as tf
 
 from official.transformer.v2 import misc
@@ -194,7 +193,7 @@ def _batch_examples(dataset, batch_size, max_length):
 
 def _read_and_batch_from_files(
     file_pattern, batch_size, max_length, num_parallel_calls, shuffle, repeat,
-    static_batch=False, num_replicas=1, ctx=None):
+    static_batch=False, num_replicas=1):
   """Create dataset where each item is a dict of "inputs" and "targets".
 
   Args:
@@ -220,16 +219,11 @@ def _read_and_batch_from_files(
       batches, and each global batch is equally divisible by number of replicas.
       Currently it is only effective when static_batch==True. TODO: make it
       effective when static_batch=False.
-    ctx: Input context.
 
   Returns:
     tf.data.Dataset object containing examples loaded from the files.
   """
   dataset = tf.data.Dataset.list_files(file_pattern, shuffle=shuffle)
-
-  if ctx and ctx.num_input_pipelines > 1:
-    logging.info("Shard %d of the dataset.", ctx.input_pipeline_id)
-    dataset = dataset.shard(ctx.num_input_pipelines, ctx.input_pipeline_id)
 
   # Read files and interleave results. When training, the order of the examples
   # will be non-deterministic.
@@ -253,7 +247,7 @@ def _read_and_batch_from_files(
         # First calculate batch size (token number) per worker, then divide it
         # into sentences, and finally expand to a global batch. It could prove
         # the global batch divisble for distribution strategy.
-        int(batch_size // num_replicas // max_length * num_replicas),
+        ((batch_size // num_replicas) // max_length) * num_replicas,
         ([max_length], [max_length]), drop_remainder=True)
   else:
     # Group and batch such that each batch has examples of similar length.
@@ -274,15 +268,15 @@ def _generate_synthetic_data(params):
   dataset = model_helpers.generate_synthetic_data(
       input_shape=tf.TensorShape([length]),
       input_value=1,
-      input_dtype=tf.int64,
+      input_dtype=tf.int32,
       label_shape=tf.TensorShape([length]),
       label_value=1,
-      label_dtype=tf.int64,
+      label_dtype=tf.int32,
   )
-  return dataset.batch(batch, drop_remainder=True)
+  return dataset.batch(batch)
 
 
-def train_input_fn(params, ctx=None):
+def train_input_fn(params):
   """Load and return dataset of batched examples for use during training."""
   file_pattern = os.path.join(params["data_dir"] or "", "*train*")
   if params["use_synthetic_data"]:
@@ -291,10 +285,10 @@ def train_input_fn(params, ctx=None):
       file_pattern, params["batch_size"], params["max_length"],
       params["num_parallel_calls"], shuffle=True,
       repeat=params["repeat_dataset"], static_batch=params["static_batch"],
-      num_replicas=params["num_gpus"], ctx=ctx)
+      num_replicas=params["num_gpus"])
 
 
-def eval_input_fn(params, ctx=None):
+def eval_input_fn(params):
   """Load and return dataset of batched examples for use during evaluation."""
   file_pattern = os.path.join(params["data_dir"] or "", "*dev*")
   if params["use_synthetic_data"]:
@@ -302,8 +296,7 @@ def eval_input_fn(params, ctx=None):
   return _read_and_batch_from_files(
       file_pattern, params["batch_size"], params["max_length"],
       params["num_parallel_calls"], shuffle=False, repeat=1,
-      static_batch=params["static_batch"], num_replicas=params["num_gpus"],
-      ctx=ctx)
+      static_batch=params["static_batch"], num_replicas=params["num_gpus"])
 
 
 def map_data_for_transformer_fn(x, y):
